@@ -86,7 +86,8 @@ function absolutize_url(raw, base = BASE_URL) {
   }
 }
 
-function extract_entry_image(entry) {
+// Strict: return image ONLY when an explicit real image field/id exists in the entry
+function extract_real_image(entry) {
   if (!entry || typeof entry !== "object") return null;
 
   if (Array.isArray(entry.thumbs) && entry.thumbs.length > 0) {
@@ -132,7 +133,7 @@ function parse_ws_entries(raw_data, out = [], seen = new Set(), depth = 0) {
       const id = String(raw_data.id ?? raw_data.tg_slug ?? "");
       const slug = String(raw_data.tg_slug ?? raw_data.id ?? "");
       const title = String(raw_data.tg_name ?? raw_data.title ?? raw_data.name ?? slug).trim();
-      const image = extract_entry_image(raw_data);
+      const image = extract_real_image(raw_data);
       const url = slug ? `${BASE_URL}/${encodeURIComponent(slug)}` : null;
       const key = `${id}|${slug}|${title}`;
 
@@ -268,44 +269,54 @@ async function fetch_json_safe(target_url) {
 }
 
 function collect_streams_recursive(node, out = [], seen = new Set(), depth = 0) {
-  if (!node || depth > 10) return out;
+  if (!node || depth > 12) return out;
+
   if (typeof node === "string") {
     const s = node.trim();
-    if (/^https?:\/\/[^\s"'<>]+(?:\.m3u8|\.mp4|\.webm)(?:\?[^\s"'<>]*)?$/i.test(s) && !seen.has(s)) {
-      seen.add(s);
-      const q_m = s.match(/(?:2160|1440|1080|720|480|360|240)p?/i);
+    const abs = absolutize_url(s, BASE_URL);
+    if (
+      abs &&
+      /^https?:\/\/[^\s"'<>]+(?:\.m3u8|\.mp4|\.webm)(?:\?[^\s"'<>]*)?$/i.test(abs) &&
+      !seen.has(abs)
+    ) {
+      seen.add(abs);
+      const q_m = abs.match(/(?:2160|1440|1080|720|480|360|240)p?/i);
       out.push({
         quality: q_m ? q_m[0] : "auto",
-        format: /\.m3u8(?:\?|$)/i.test(s) ? "hls" : "mp4",
-        url: s,
+        format: /\.m3u8(?:\?|$)/i.test(abs) ? "hls" : "mp4",
+        url: abs,
       });
     }
     return out;
   }
+
   if (Array.isArray(node)) {
     for (const item of node) collect_streams_recursive(item, out, seen, depth + 1);
     return out;
   }
+
   if (typeof node === "object") {
     for (const [k, v] of Object.entries(node)) {
-      if (typeof v === "string" && /^https?:\/\//i.test(v.trim())) {
-        const u = v.trim();
+      if (typeof v === "string") {
+        const abs = absolutize_url(v, BASE_URL);
         if (
-          /(\.m3u8|\.mp4|\.webm|playlist|manifest|stream)/i.test(u) &&
-          !/(\.jpg|\.jpeg|\.png|\.webp|\.gif|\.svg|\.js|\.css)/i.test(u) &&
-          !seen.has(u)
+          abs &&
+          /(\.m3u8|\.mp4|\.webm|playlist|manifest|stream)/i.test(abs) &&
+          !/(\.jpg|\.jpeg|\.png|\.webp|\.gif|\.svg|\.js|\.css)/i.test(abs) &&
+          !seen.has(abs)
         ) {
-          seen.add(u);
+          seen.add(abs);
           out.push({
             quality: String(k),
-            format: /\.m3u8(?:\?|$)/i.test(u) ? "hls" : "mp4",
-            url: u,
+            format: /\.m3u8(?:\?|$)/i.test(abs) ? "hls" : "mp4",
+            url: abs,
           });
         }
       }
       collect_streams_recursive(v, out, seen, depth + 1);
     }
   }
+
   return out;
 }
 
@@ -341,26 +352,8 @@ async function resolve_info(target_input, explicit_image = null) {
   const og_img =
     (html.match(/<meta[^>]+property=["']og:image["'][^>]*content=["']([^"']+)["']/i) || [])[1] || "";
 
-  let api_json = null;
-  if (slug_or_id) {
-    const candidates = [
-      `${STORE_BASE}/tag/${encodeURIComponent(slug_or_id)}/videos`,
-      `${VIDEO_BASE}/${encodeURIComponent(slug_or_id)}`,
-      `${VP_HANDLER_BASE}/video?id=${encodeURIComponent(slug_or_id)}`,
-      `${VP_BASE}/${encodeURIComponent(slug_or_id)}`,
-    ];
-
-    for (const candidate of candidates) {
-      const parsed = await fetch_json_safe(candidate);
-      if (parsed && typeof parsed === "object") {
-        api_json = parsed;
-        break;
-      }
-    }
-  }
-
   let matched_item = null;
-  if (!explicit_image && slug_or_id) {
+  if (slug_or_id) {
     try {
       const found = await ws_search({ query: slug_or_id, offset: 0, limit: 10, timeout_ms: 4500 });
       matched_item =
@@ -372,8 +365,41 @@ async function resolve_info(target_input, explicit_image = null) {
     } catch (_) {}
   }
 
+  const lookup_keys = Array.from(
+    new Set([slug_or_id, matched_item?.id, matched_item?.slug].filter(Boolean))
+  );
+
+  let api_json = null;
+  let tag_videos_json = null;
+
+  for (const key_val of lookup_keys) {
+    if (!tag_videos_json) {
+      tag_videos_json = await fetch_json_safe(
+        `${STORE_BASE}/tag/${encodeURIComponent(key_val)}/videos`
+      );
+    }
+    if (!api_json) {
+      const candidates = [
+        `${VP_HANDLER_BASE}/v1/video/${encodeURIComponent(key_val)}`,
+        `${VP_HANDLER_BASE}/video/${encodeURIComponent(key_val)}`,
+        `${VP_HANDLER_BASE}/video?id=${encodeURIComponent(key_val)}`,
+        `${VP_HANDLER_BASE}/${encodeURIComponent(key_val)}`,
+        `${VP_BASE}/${encodeURIComponent(key_val)}`,
+        `${VIDEO_BASE}/${encodeURIComponent(key_val)}`,
+      ];
+      for (const candidate of candidates) {
+        const parsed = await fetch_json_safe(candidate);
+        if (parsed && typeof parsed === "object") {
+          api_json = parsed;
+          break;
+        }
+      }
+    }
+  }
+
   const title =
     api_json?.title ||
+    api_json?.data?.title ||
     api_json?.tg_name ||
     matched_item?.title ||
     og_title ||
@@ -382,36 +408,44 @@ async function resolve_info(target_input, explicit_image = null) {
 
   const description =
     api_json?.description ||
+    api_json?.data?.description ||
     api_json?.tg_caption ||
     og_desc ||
     null;
 
+  // Strict: only use real extracted images (explicit param, API/item/tag_videos image, or og:image)
   const image =
     absolutize_url(explicit_image, THUMBS_BASE) ||
-    extract_entry_image(api_json) ||
+    extract_real_image(api_json) ||
+    extract_real_image(api_json?.data) ||
+    extract_real_image(tag_videos_json) ||
     matched_item?.image ||
     absolutize_url(og_img, page_url) ||
     null;
 
-  const streams = [
+  const raw_streams = [
     ...collect_streams_recursive(api_json),
+    ...collect_streams_recursive(tag_videos_json),
     ...collect_streams_recursive(html),
   ];
 
-  const preview_url =
-    slug_or_id && /^\d+$/.test(slug_or_id)
-      ? `${VP_BASE}/${slug_or_id}/0-0.mp4`
-      : null;
+  const streams = [];
+  const seen_stream_urls = new Set();
+  for (const s of raw_streams) {
+    if (!seen_stream_urls.has(s.url)) {
+      seen_stream_urls.add(s.url);
+      streams.push(s);
+    }
+  }
 
   return {
-    id: slug_or_id || null,
+    id: matched_item?.id || slug_or_id || null,
+    slug: matched_item?.slug || slug_or_id || null,
     url: page_url,
     title,
     description,
     image,
     videosCount: matched_item?.videosCount ?? null,
-    previewUrl: preview_url,
-    previewsHost: PREVIEWS_BASE,
     streams,
   };
 }
@@ -485,15 +519,16 @@ export default {
         const info = await resolve_info(target, explicit_image);
         const mp4 = info.streams.find((s) => s.format === "mp4");
         const best = mp4 || info.streams[0] || null;
-        const fallback_url = best ? best.url : info.previewUrl || info.url;
 
         return json_res({
           ok: true,
           id: info.id,
+          slug: info.slug,
+          url: info.url,
           title: info.title,
           image: info.image,
-          downloadUrl: fallback_url,
-          format: best ? best.format : info.previewUrl ? "preview-mp4" : "page",
+          downloadUrl: best ? best.url : null,
+          format: best ? best.format : null,
           streams: info.streams,
         });
       }
