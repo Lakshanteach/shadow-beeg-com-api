@@ -1,4 +1,4 @@
-// language: JavaScript, runtime: Cloudflare Workers, target: inspect SPA shell scripts
+// language: JavaScript, runtime: Cloudflare Workers, target: scan SPA bundle for API routes
 
 const CREATOR = "CREATOR BY 👨‍💻 SHADOW MOVIE X MAIN OWMER 👨‍💻";
 const BASE_URL = "https://beeg.com";
@@ -46,31 +46,49 @@ export default {
       return json_res({ ok: false, error: "Invalid or missing API key" }, 401);
     }
 
-    if (pathname === "/shell") {
-      const r = await fetch(`${BASE_URL}/`, {
+    if (pathname === "/bundle") {
+      const shell_r = await fetch(`${BASE_URL}/`, {
         headers: { "User-Agent": UA, Referer: BASE_URL },
         redirect: "follow",
       });
-      const html = await r.text();
-      const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => {
-        const src_m = m[0].match(/src=["']([^"']+)["']/i);
-        const type_m = m[0].match(/type=["']([^"']+)["']/i);
-        return {
-          src: src_m ? src_m[1] : null,
-          type: type_m ? type_m[1] : null,
-          inlinePreview: src_m ? null : m[1].trim().slice(0, 400),
-        };
+      const shell_html = await shell_r.text();
+      const bundle_m = shell_html.match(/src=["']([^"']*\/dist\/main\.[^"']+\.js)["']/i);
+      const bundle_path = bundle_m ? bundle_m[1] : "/dist/main.94e48973.js";
+      const bundle_url = new URL(bundle_path, BASE_URL).toString();
+
+      const js_r = await fetch(bundle_url, {
+        headers: { "User-Agent": UA, Referer: `${BASE_URL}/` },
+        redirect: "follow",
       });
-      const body_m = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+      const js_code = await js_r.text();
+
+      const api_paths = [
+        ...new Set(
+          [...js_code.matchAll(/["'`](\/[a-zA-Z0-9_\-\/]*(?:api|search|video|media|stream|hls|mp4|thumb|poster|tag|channel|feed)[a-zA-Z0-9_\-\/\?\=\&]*?)["'`]/gi)].map(
+            (m) => m[1]
+          )
+        ),
+      ].slice(0, 80);
+
+      const full_urls = [
+        ...new Set(
+          [...js_code.matchAll(/https?:\/\/[a-zA-Z0-9.\-_\/]+(?:api|cdn|thumb|stream|video|beeg)[a-zA-Z0-9.\-_\/?=&]*/gi)].map(
+            (m) => m[0]
+          )
+        ),
+      ].slice(0, 60);
 
       return json_res({
         ok: true,
-        scriptCount: scripts.length,
-        scripts,
-        bodyPreview: body_m ? body_m[1].trim().slice(0, 800) : html.slice(0, 800),
+        bundleUrl: bundle_url,
+        status: js_r.status,
+        bundleSize: js_code.length,
+        apiPathCount: api_paths.length,
+        apiPaths: api_paths,
+        fullUrls: full_urls,
       });
     }
 
-    return json_res({ ok: false, error: "Use /shell?apikey=shadow_movie-x_-9999999999" }, 404);
+    return json_res({ ok: false, error: "Use /bundle?apikey=shadow_movie-x_-9999999999" }, 404);
   },
 };
