@@ -1,16 +1,14 @@
-// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls API worker (hidden header key)
+// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls API worker (fault-tolerant info & dl)
 
 const CREATOR = "CREATOR BY 👨‍💻 SHADOW MOVIE X MAIN OWMER 👨‍💻";
 const BASE_URL = "https://beeg.com";
 const WS_SEARCH_URL = "https://search.externulls.com/";
 const THUMBS_BASE = "https://thumbs.externulls.com";
-const PREVIEWS_BASE = "https://previews.externulls.com";
 const VP_BASE = "https://vp.externulls.com";
 const VP_HANDLER_BASE = "https://vp-handler.externulls.com";
 const STORE_BASE = "https://store.externulls.com";
 const VIDEO_BASE = "https://video.beeg.com";
 
-// Base64-encoded keys stored inside code (not plain text); add more base64 keys separated by "," if needed
 const EMBEDDED_KEYS_B64 = [
   "c2hhZG93X21vdmllLXhfLTk5OTk5OTk5OTk=",
 ];
@@ -65,7 +63,6 @@ function get_allowed_keys(env) {
   return keys;
 }
 
-// Header-only extraction (URL query keys intentionally ignored)
 function extract_api_key_from_headers(request) {
   const header_key =
     request.headers.get("x-api-key") ||
@@ -109,6 +106,10 @@ function absolutize_url(raw, base = BASE_URL) {
   } catch (_) {
     return null;
   }
+}
+
+function is_image_url(u) {
+  return typeof u === "string" && /(\/thumbs\.externulls\.com\/|\.(?:jpg|jpeg|png|webp|gif)(?:\?|$))/i.test(u);
 }
 
 // Strict: return image ONLY when an explicit real image field/id exists in the entry
@@ -188,109 +189,123 @@ function parse_ws_entries(raw_data, out = [], seen = new Set(), depth = 0) {
 }
 
 async function ws_search({ query, offset = 0, limit = 24, category_id = null, timeout_ms = 8000 }) {
-  const res = await fetch(WS_SEARCH_URL, {
-    headers: {
-      Upgrade: "websocket",
-      Connection: "Upgrade",
-      "User-Agent": UA,
-      Origin: BASE_URL,
-      Referer: `${BASE_URL}/`,
-      "Sec-WebSocket-Version": "13",
-    },
-  });
+  try {
+    const res = await fetch(WS_SEARCH_URL, {
+      headers: {
+        Upgrade: "websocket",
+        Connection: "Upgrade",
+        "User-Agent": UA,
+        Origin: BASE_URL,
+        Referer: `${BASE_URL}/`,
+        "Sec-WebSocket-Version": "13",
+      },
+    });
 
-  const ws = res.webSocket;
-  if (!ws) {
-    throw new Error(`WebSocket upgrade failed (status ${res.status})`);
+    const ws = res.webSocket;
+    if (!ws) return [];
+
+    ws.accept();
+
+    const msg_type = category_id ? "search_category" : "search";
+    const payload = {
+      type: msg_type,
+      ignore_stats: true,
+      payload: {
+        Search_string: query,
+        offset,
+        limit,
+        category_id,
+      },
+    };
+
+    return await new Promise((resolve) => {
+      const items = [];
+      const seen = new Set();
+      let settled = false;
+
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(hard_timer);
+        clearTimeout(idle_timer);
+        try {
+          ws.close(1000, "done");
+        } catch (_) {}
+        resolve(items.slice(0, limit));
+      };
+
+      const reset_idle = () => {
+        clearTimeout(idle_timer);
+        idle_timer = setTimeout(() => finish(), 700);
+      };
+
+      const hard_timer = setTimeout(() => finish(), timeout_ms);
+      let idle_timer = setTimeout(() => finish(), 2500);
+
+      const send_query = () => {
+        try {
+          ws.send(JSON.stringify(payload));
+        } catch (_) {}
+      };
+
+      ws.addEventListener("open", send_query);
+      send_query();
+
+      ws.addEventListener("message", (event) => {
+        reset_idle();
+        if (typeof event.data !== "string") return;
+        let parsed;
+        try {
+          parsed = JSON.parse(event.data);
+        } catch (_) {
+          return;
+        }
+        parse_ws_entries(parsed, items, seen, 0);
+      });
+
+      ws.addEventListener("error", () => finish());
+    });
+  } catch (_) {
+    return [];
   }
-
-  ws.accept();
-
-  const msg_type = category_id ? "search_category" : "search";
-  const payload = {
-    type: msg_type,
-    ignore_stats: true,
-    payload: {
-      Search_string: query,
-      offset,
-      limit,
-      category_id,
-    },
-  };
-
-  return await new Promise((resolve, reject) => {
-    const items = [];
-    const seen = new Set();
-    let settled = false;
-
-    const finish = (err = null) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(hard_timer);
-      clearTimeout(idle_timer);
-      try {
-        ws.close(1000, "done");
-      } catch (_) {}
-      if (err) reject(err);
-      else resolve(items.slice(0, limit));
-    };
-
-    const reset_idle = () => {
-      clearTimeout(idle_timer);
-      idle_timer = setTimeout(() => finish(), 700);
-    };
-
-    const hard_timer = setTimeout(() => finish(), timeout_ms);
-    let idle_timer = setTimeout(() => finish(), 2500);
-
-    const send_query = () => {
-      try {
-        ws.send(JSON.stringify(payload));
-      } catch (_) {}
-    };
-
-    ws.addEventListener("open", send_query);
-    send_query();
-
-    ws.addEventListener("message", (event) => {
-      reset_idle();
-      if (typeof event.data !== "string") return;
-      let parsed;
-      try {
-        parsed = JSON.parse(event.data);
-      } catch (_) {
-        return;
-      }
-      parse_ws_entries(parsed, items, seen, 0);
-    });
-
-    ws.addEventListener("error", (e) => {
-      finish(new Error(e?.message || "WebSocket error"));
-    });
-  });
 }
 
-async function fetch_json_safe(target_url) {
+async function fetch_text_safe(target_url, accept = "*/*", timeout_ms = 6000) {
+  if (!target_url || is_image_url(target_url)) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout_ms);
   try {
     const r = await fetch(target_url, {
+      signal: controller.signal,
       headers: {
         "User-Agent": UA,
         Origin: BASE_URL,
         Referer: `${BASE_URL}/`,
-        Accept: "application/json, text/plain, */*",
+        Accept: accept,
       },
       redirect: "follow",
     });
     if (!r.ok) return null;
-    const txt = await r.text();
-    const trimmed = txt.trim();
-    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-      return JSON.parse(trimmed);
-    }
-    return null;
+    return await r.text();
   } catch (_) {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+async function fetch_json_safe(target_url) {
+  const txt = await fetch_text_safe(target_url, "application/json, text/plain, */*", 6000);
+  if (!txt) return null;
+  const trimmed = txt.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      return JSON.parse(trimmed);
+    } catch (_) {
+      return null;
+    }
+  }
+  return null;
 }
 
 function collect_streams_recursive(node, out = [], seen = new Set(), depth = 0) {
@@ -298,9 +313,11 @@ function collect_streams_recursive(node, out = [], seen = new Set(), depth = 0) 
 
   if (typeof node === "string") {
     const s = node.trim();
+    if (is_image_url(s)) return out;
     const abs = absolutize_url(s, BASE_URL);
     if (
       abs &&
+      !is_image_url(abs) &&
       /^https?:\/\/[^\s"'<>]+(?:\.m3u8|\.mp4|\.webm)(?:\?[^\s"'<>]*)?$/i.test(abs) &&
       !seen.has(abs)
     ) {
@@ -322,10 +339,11 @@ function collect_streams_recursive(node, out = [], seen = new Set(), depth = 0) 
 
   if (typeof node === "object") {
     for (const [k, v] of Object.entries(node)) {
-      if (typeof v === "string") {
+      if (typeof v === "string" && !is_image_url(v)) {
         const abs = absolutize_url(v, BASE_URL);
         if (
           abs &&
+          !is_image_url(abs) &&
           /(\.m3u8|\.mp4|\.webm|playlist|manifest|stream)/i.test(abs) &&
           !/(\.jpg|\.jpeg|\.png|\.webp|\.gif|\.svg|\.js|\.css)/i.test(abs) &&
           !seen.has(abs)
@@ -346,25 +364,18 @@ function collect_streams_recursive(node, out = [], seen = new Set(), depth = 0) 
 }
 
 async function resolve_info(target_input, explicit_image = null) {
-  const raw = String(target_input).trim();
+  const raw = String(target_input || "").trim();
+  const clean_explicit_img = explicit_image && is_image_url(explicit_image)
+    ? absolutize_url(explicit_image, THUMBS_BASE)
+    : null;
+
   const is_url = /^https?:\/\//i.test(raw);
   const page_url = is_url ? raw : `${BASE_URL}/${encodeURIComponent(raw)}`;
   const slug_or_id = is_url
     ? raw.replace(/^https?:\/\/[^/]+\/?/i, "").split(/[?#]/)[0].replace(/\/+$/, "")
     : raw.replace(/^\/+|\/+$/g, "");
 
-  let html = "";
-  try {
-    const r = await fetch(page_url, {
-      headers: {
-        "User-Agent": UA,
-        Referer: `${BASE_URL}/`,
-        Accept: "text/html,application/xhtml+xml,*/*",
-      },
-      redirect: "follow",
-    });
-    html = await r.text();
-  } catch (_) {}
+  const html = (await fetch_text_safe(page_url, "text/html,application/xhtml+xml,*/*", 6000)) || "";
 
   const og_title =
     (html.match(/<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)["']/i) || [])[1] || "";
@@ -379,15 +390,13 @@ async function resolve_info(target_input, explicit_image = null) {
 
   let matched_item = null;
   if (slug_or_id) {
-    try {
-      const found = await ws_search({ query: slug_or_id, offset: 0, limit: 10, timeout_ms: 4500 });
-      matched_item =
-        found.find(
-          (it) =>
-            String(it.slug || "").toLowerCase() === slug_or_id.toLowerCase() ||
-            String(it.id || "").toLowerCase() === slug_or_id.toLowerCase()
-        ) || found[0] || null;
-    } catch (_) {}
+    const found = await ws_search({ query: slug_or_id, offset: 0, limit: 10, timeout_ms: 4000 });
+    matched_item =
+      found.find(
+        (it) =>
+          String(it.slug || "").toLowerCase() === slug_or_id.toLowerCase() ||
+          String(it.id || "").toLowerCase() === slug_or_id.toLowerCase()
+      ) || found[0] || null;
   }
 
   const lookup_keys = Array.from(
@@ -438,9 +447,8 @@ async function resolve_info(target_input, explicit_image = null) {
     og_desc ||
     null;
 
-  // Strict: only use real extracted images (explicit param, API/item/tag_videos image, or og:image)
   const image =
-    absolutize_url(explicit_image, THUMBS_BASE) ||
+    clean_explicit_img ||
     extract_real_image(api_json) ||
     extract_real_image(api_json?.data) ||
     extract_real_image(tag_videos_json) ||
