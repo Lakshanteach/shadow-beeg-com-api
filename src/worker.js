@@ -1,4 +1,4 @@
-// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls API worker
+// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls API worker + vp-handler/stream probe
 
 const CREATOR = "CREATOR BY 👨‍💻 SHADOW MOVIE X MAIN OWMER 👨‍💻";
 const BASE_URL = "https://beeg.com";
@@ -397,7 +397,7 @@ async function resolve_info(target_input, explicit_image = null) {
   };
 }
 
-async function inspect_vp_in_bundle() {
+async function inspect_vp_in_bundle(mode = "vp") {
   const shell_r = await fetch(`${BASE_URL}/`, {
     headers: { "User-Agent": UA, Referer: BASE_URL },
   });
@@ -413,15 +413,20 @@ async function inspect_vp_in_bundle() {
   });
   const js_code = await js_r.text();
 
+  const keys =
+    mode === "video_id"
+      ? ["video_route_symbol", "embed_video_route_symbol", "api_endpoint_videos"]
+      : ["api_endpoint_vp_handler", "vp-handler", "vp.externulls.com"];
+
   const snippets = [];
-  for (const key of ["api_endpoint_vp_handler", "api_endpoint_videos", "vp-handler"]) {
+  for (const key of keys) {
     let idx = js_code.indexOf(key);
-    while (idx !== -1 && snippets.length < 12) {
-      snippets.push(js_code.slice(Math.max(0, idx - 140), Math.min(js_code.length, idx + 260)));
+    while (idx !== -1 && snippets.length < 10) {
+      snippets.push(js_code.slice(Math.max(0, idx - 120), Math.min(js_code.length, idx + 240)));
       idx = js_code.indexOf(key, idx + key.length);
     }
   }
-  return { bundleUrl: bundle_url, snippets };
+  return { bundleUrl: bundle_url, mode, snippets };
 }
 
 export default {
@@ -451,7 +456,8 @@ export default {
 
     try {
       if (pathname === "/vp-check") {
-        const info = await inspect_vp_in_bundle();
+        const mode = (url.searchParams.get("mode") || "vp").trim();
+        const info = await inspect_vp_in_bundle(mode);
         return json_res({ ok: true, ...info });
       }
 
