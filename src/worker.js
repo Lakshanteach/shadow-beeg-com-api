@@ -1,4 +1,4 @@
-// language: JavaScript, runtime: Cloudflare Workers, target: beeg.com debug probe
+// language: JavaScript, runtime: Cloudflare Workers, target: inspect SPA shell scripts
 
 const CREATOR = "CREATOR BY 👨‍💻 SHADOW MOVIE X MAIN OWMER 👨‍💻";
 const BASE_URL = "https://beeg.com";
@@ -46,42 +46,31 @@ export default {
       return json_res({ ok: false, error: "Invalid or missing API key" }, 401);
     }
 
-    if (pathname === "/debug") {
-      const q = (url.searchParams.get("q") || "test").trim();
-      const targets = [
-        `${BASE_URL}/`,
-        `${BASE_URL}/search?q=${encodeURIComponent(q)}`,
-        `${BASE_URL}/api/v6/ch/search?query=${encodeURIComponent(q)}&limit=10&offset=0`,
-      ];
+    if (pathname === "/shell") {
+      const r = await fetch(`${BASE_URL}/`, {
+        headers: { "User-Agent": UA, Referer: BASE_URL },
+        redirect: "follow",
+      });
+      const html = await r.text();
+      const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => {
+        const src_m = m[0].match(/src=["']([^"']+)["']/i);
+        const type_m = m[0].match(/type=["']([^"']+)["']/i);
+        return {
+          src: src_m ? src_m[1] : null,
+          type: type_m ? type_m[1] : null,
+          inlinePreview: src_m ? null : m[1].trim().slice(0, 400),
+        };
+      });
+      const body_m = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
 
-      const results = [];
-      for (const t of targets) {
-        try {
-          const r = await fetch(t, {
-            headers: {
-              "User-Agent": UA,
-              Referer: BASE_URL,
-              Accept: "*/*",
-            },
-            redirect: "follow",
-          });
-          const txt = await r.text();
-          results.push({
-            url: t,
-            finalUrl: r.url,
-            status: r.status,
-            contentType: r.headers.get("content-type"),
-            length: txt.length,
-            preview: txt.slice(0, 600),
-          });
-        } catch (e) {
-          results.push({ url: t, error: e.message });
-        }
-      }
-
-      return json_res({ ok: true, results });
+      return json_res({
+        ok: true,
+        scriptCount: scripts.length,
+        scripts,
+        bodyPreview: body_m ? body_m[1].trim().slice(0, 800) : html.slice(0, 800),
+      });
     }
 
-    return json_res({ ok: false, error: "Use /debug?q=test&apikey=shadow_movie-x_-9999999999" }, 404);
+    return json_res({ ok: false, error: "Use /shell?apikey=shadow_movie-x_-9999999999" }, 404);
   },
 };
