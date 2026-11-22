@@ -1,4 +1,4 @@
-// language: JavaScript, runtime: Cloudflare Workers, target: extract API endpoint patterns from main bundle
+// language: JavaScript, runtime: Cloudflare Workers, target: probe externulls endpoints & bundle payload structure
 
 const CREATOR = "CREATOR BY 👨‍💻 SHADOW MOVIE X MAIN OWMER 👨‍💻";
 const BASE_URL = "https://beeg.com";
@@ -33,16 +33,14 @@ function check_key(request, url) {
   return VALID_API_KEYS.has(k.trim());
 }
 
-function collect_snippets(js_code, pattern, limit = 25, radius = 90) {
+function snippets_around(text, token, limit = 10, before = 120, after = 220) {
   const out = [];
-  const flags = pattern.includes("g") ? pattern : `${pattern}g`;
-  const rx = new RegExp(pattern, flags.replace(/[^gimsuy]/g, ""));
-  for (const m of js_code.matchAll(rx)) {
-    const idx = m.index ?? 0;
-    const start = Math.max(0, idx - radius);
-    const end = Math.min(js_code.length, idx + m[0].length + radius);
-    out.push(js_code.slice(start, end));
-    if (out.length >= limit) break;
+  let pos = 0;
+  while (out.length < limit) {
+    const idx = text.indexOf(token, pos);
+    if (idx === -1) break;
+    out.push(text.slice(Math.max(0, idx - before), Math.min(text.length, idx + token.length + after)));
+    pos = idx + token.length;
   }
   return out;
 }
@@ -60,56 +58,62 @@ export default {
       return json_res({ ok: false, error: "Invalid or missing API key" }, 401);
     }
 
-    if (pathname === "/api-hunt") {
+    if (pathname === "/ws-probe") {
+      const q = (url.searchParams.get("q") || "test").trim();
+
       const shell_r = await fetch(`${BASE_URL}/`, {
         headers: { "User-Agent": UA, Referer: BASE_URL },
-        redirect: "follow",
       });
       const shell_html = await shell_r.text();
       const bundle_m = shell_html.match(/src=["']([^"']*\/dist\/main\.[^"']+\.js)["']/i);
-      const bundle_path = bundle_m ? bundle_m[1] : "/dist/main.94e48973.js";
-      const bundle_url = new URL(bundle_path, BASE_URL).toString();
+      const bundle_url = new URL(bundle_m ? bundle_m[1] : "/dist/main.94e48973.js", BASE_URL).toString();
 
       const js_r = await fetch(bundle_url, {
         headers: { "User-Agent": UA, Referer: `${BASE_URL}/` },
-        redirect: "follow",
       });
       const js_code = await js_r.text();
 
-      const endpoint_tokens = [
-        ...new Set(
-          [
-            ...js_code.matchAll(
-              /["'`]((?:\/[a-zA-Z0-9_.\-]+){1,6}(?:\?[^\s"'`<>]*)?)["'`]/g
-            ),
-          ]
-            .map((m) => m[1])
-            .filter(
-              (p) =>
-                p.length > 2 &&
-                !p.startsWith("/dist/") &&
-                !p.startsWith("/assets/") &&
-                !p.includes("svg") &&
-                !p.includes("css")
-            )
-        ),
-      ].slice(0, 120);
+      const probe_urls = [
+        `https://search.externulls.com/?q=${encodeURIComponent(q)}`,
+        `https://thumbs.externulls.com/`,
+        `https://vp.externulls.com/`,
+      ];
 
-      const cdn_snippets = collect_snippets(js_code, "ahacdn\\.me", 15, 110);
-      const video_host_snippets = collect_snippets(js_code, "video\\.beeg\\.com", 15, 110);
-      const search_snippets = collect_snippets(js_code, "search", 15, 80);
+      const http_probes = [];
+      for (const pu of probe_urls) {
+        try {
+          const r = await fetch(pu, {
+            headers: {
+              "User-Agent": UA,
+              Origin: BASE_URL,
+              Referer: `${BASE_URL}/`,
+              Accept: "*/*",
+            },
+          });
+          const body = await r.text();
+          http_probes.push({
+            url: pu,
+            status: r.status,
+            headers: Object.fromEntries(r.headers.entries()),
+            length: body.length,
+            preview: body.slice(0, 400),
+          });
+        } catch (e) {
+          http_probes.push({ url: pu, error: e.message });
+        }
+      }
 
       return json_res({
         ok: true,
-        bundleUrl: bundle_url,
-        endpointTokenCount: endpoint_tokens.length,
-        endpointTokens: endpoint_tokens,
-        cdnSnippets: cdn_snippets,
-        videoHostSnippets: video_host_snippets,
-        searchSnippets: search_snippets,
+        query: q,
+        searchStringCode: snippets_around(js_code, "Search_string", 5, 160, 260),
+        apiEndpointCode: snippets_around(js_code, "api_endpoint_", 12, 60, 140),
+        vpCode: snippets_around(js_code, "vp.externulls.com", 5, 120, 200),
+        thumbsCode: snippets_around(js_code, "thumbs.externulls.com", 5, 120, 200),
+        httpProbes: http_probes,
       });
     }
 
-    return json_res({ ok: false, error: "Use /api-hunt?apikey=shadow_movie-x_-9999999999" }, 404);
+    return json_res({ ok: false, error: "Use /ws-probe?q=test&apikey=shadow_movie-x_-9999999999" }, 404);
   },
 };
