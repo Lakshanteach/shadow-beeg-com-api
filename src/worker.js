@@ -1,4 +1,4 @@
-// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls API worker (single-flow ready)
+// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls API worker
 
 const CREATOR = "CREATOR BY 👨‍💻 SHADOW MOVIE X MAIN OWMER 👨‍💻";
 const BASE_URL = "https://beeg.com";
@@ -9,7 +9,6 @@ const VP_HANDLER_BASE = "https://vp-handler.externulls.com";
 const STORE_BASE = "https://store.externulls.com";
 const VIDEO_BASE = "https://video.beeg.com";
 
-// Base64-encoded keys stored inside code (add more base64 keys to share access with specific users)
 const EMBEDDED_KEYS_B64 = [
   "c2hhZG93X21vdmllLXhfLTk5OTk5OTk5OTk=",
 ];
@@ -49,40 +48,33 @@ function decode_b64_safe(b64) {
 
 function get_allowed_keys(env) {
   const keys = new Set();
-
   for (const b64 of EMBEDDED_KEYS_B64) {
     const decoded = decode_b64_safe(b64);
     if (decoded) keys.add(decoded);
   }
-
   const env_raw = String(env?.API_KEYS || "");
   for (const k of env_raw.split(/[\n,]+/)) {
     const clean = k.trim();
     if (clean) keys.add(clean);
   }
-
   return keys;
 }
 
-// Header-only extraction (URL query keys intentionally ignored)
 function extract_api_key_from_headers(request) {
   const header_key =
     request.headers.get("x-api-key") ||
     request.headers.get("apikey") ||
     "";
-
   const auth_header = request.headers.get("authorization") || "";
   const bearer_key = auth_header.toLowerCase().startsWith("bearer ")
     ? auth_header.slice(7).trim()
     : "";
-
   return (header_key || bearer_key || "").trim();
 }
 
 function require_api_key(request, env) {
   const allowed = get_allowed_keys(env);
   const provided = extract_api_key_from_headers(request);
-
   if (!provided || !allowed.has(provided)) {
     return json_res(
       {
@@ -117,7 +109,6 @@ function is_image_url(u) {
   );
 }
 
-// Strict: return image ONLY when an explicit real image field/id exists in the entry
 function extract_real_image(entry) {
   if (!entry || typeof entry !== "object") return null;
 
@@ -275,7 +266,7 @@ async function ws_search({ query, offset = 0, limit = 24, category_id = null, ti
   }
 }
 
-async function fetch_text_safe(target_url, accept = "*/*", timeout_ms = 6000) {
+async function fetch_text_safe(target_url, accept = "*/*", timeout_ms = 5000) {
   if (!target_url || is_image_url(target_url)) return null;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout_ms);
@@ -300,7 +291,7 @@ async function fetch_text_safe(target_url, accept = "*/*", timeout_ms = 6000) {
 }
 
 async function fetch_json_safe(target_url) {
-  const txt = await fetch_text_safe(target_url, "application/json, text/plain, */*", 6000);
+  const txt = await fetch_text_safe(target_url, "application/json, text/plain, */*", 5000);
   if (!txt) return null;
   const trimmed = txt.trim();
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
@@ -381,7 +372,10 @@ async function resolve_info(target_input, explicit_image = null) {
     ? raw.replace(/^https?:\/\/[^/]+\/?/i, "").split(/[?#]/)[0].replace(/\/+$/, "")
     : raw.replace(/^\/+|\/+$/g, "");
 
-  const html = (await fetch_text_safe(page_url, "text/html,application/xhtml+xml,*/*", 6000)) || "";
+  let html = "";
+  try {
+    html = (await fetch_text_safe(page_url, "text/html,application/xhtml+xml,*/*", 5000)) || "";
+  } catch (_) {}
 
   const og_title =
     (html.match(/<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)["']/i) || [])[1] || "";
