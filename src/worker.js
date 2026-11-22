@@ -1,17 +1,14 @@
-// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls API worker
+// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls full scraper API (no key)
 
 const CREATOR = "CREATOR BY 👨‍💻 SHADOW MOVIE X MAIN OWMER 👨‍💻";
 const BASE_URL = "https://beeg.com";
 const WS_SEARCH_URL = "https://search.externulls.com/";
 const THUMBS_BASE = "https://thumbs.externulls.com";
+const PREVIEWS_BASE = "https://previews.externulls.com";
 const VP_BASE = "https://vp.externulls.com";
 const VP_HANDLER_BASE = "https://vp-handler.externulls.com";
 const STORE_BASE = "https://store.externulls.com";
 const VIDEO_BASE = "https://video.beeg.com";
-
-const EMBEDDED_KEYS_B64 = [
-  "c2hhZG93X21vdmllLXhfLTk5OTk5OTk5OTk=",
-];
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -32,61 +29,10 @@ function json_res(data, status = 200) {
         "Content-Type": "application/json; charset=utf-8",
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, apikey",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
       },
     }
   );
-}
-
-function decode_b64_safe(b64) {
-  try {
-    return atob(String(b64 || "").trim()).trim();
-  } catch (_) {
-    return "";
-  }
-}
-
-function get_allowed_keys(env) {
-  const keys = new Set();
-  for (const b64 of EMBEDDED_KEYS_B64) {
-    const decoded = decode_b64_safe(b64);
-    if (decoded) keys.add(decoded);
-  }
-  const env_raw = String(env?.API_KEYS || "");
-  for (const k of env_raw.split(/[\n,]+/)) {
-    const clean = k.trim();
-    if (clean) keys.add(clean);
-  }
-  return keys;
-}
-
-function extract_api_key_from_headers(request) {
-  const header_key =
-    request.headers.get("x-api-key") ||
-    request.headers.get("apikey") ||
-    "";
-  const auth_header = request.headers.get("authorization") || "";
-  const bearer_key = auth_header.toLowerCase().startsWith("bearer ")
-    ? auth_header.slice(7).trim()
-    : "";
-  return (header_key || bearer_key || "").trim();
-}
-
-function require_api_key(request, env) {
-  const allowed = get_allowed_keys(env);
-  const provided = extract_api_key_from_headers(request);
-  if (!provided || !allowed.has(provided)) {
-    return json_res(
-      {
-        ok: false,
-        error: "API key required in header",
-        message: "API key එක ලබාගැනීමට owner වෙතින් ඉල්ලා සිටින්න.",
-        headers: ["X-API-Key: <YOUR_API_KEY>", "Authorization: Bearer <YOUR_API_KEY>"],
-      },
-      401
-    );
-  }
-  return null;
 }
 
 function absolutize_url(raw, base = BASE_URL) {
@@ -484,7 +430,7 @@ async function resolve_info(target_input, explicit_image = null) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request) {
     if (request.method === "OPTIONS") {
       return json_res({ ok: true }, 200);
     }
@@ -492,24 +438,20 @@ export default {
     const url = new URL(request.url);
     const pathname = url.pathname.replace(/\/+$/, "") || "/";
 
-    if (pathname === "/health") {
-      return json_res({
-        ok: true,
-        status: "ready",
-        message: "API key එක ලබාගැනීමට owner වෙතින් ඉල්ලා සිටින්න.",
-        endpoints: [
-          "/search?q=<query>&offset=0&limit=24",
-          "/info?url=<url_or_slug>&image=<optional_img_url>",
-          "/information?url=<url_or_slug>&image=<optional_img_url>",
-          "/dl?url=<url_or_slug>&image=<optional_img_url>",
-        ],
-      });
-    }
-
-    const auth_err = require_api_key(request, env);
-    if (auth_err) return auth_err;
-
     try {
+      if (pathname === "/health") {
+        return json_res({
+          ok: true,
+          status: "ready",
+          endpoints: [
+            "/search?q=<query>&offset=0&limit=24",
+            "/info?url=<url_or_slug>&image=<optional_img_url>",
+            "/information?url=<url_or_slug>&image=<optional_img_url>",
+            "/dl?url=<url_or_slug>&image=<optional_img_url>",
+          ],
+        });
+      }
+
       if (pathname === "/search") {
         const q = (url.searchParams.get("q") || "").trim();
         if (!q) {
