@@ -1,10 +1,9 @@
-// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls full scraper API (no key)
+// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls scraper (search + tag videos + info + dl)
 
 const CREATOR = "CREATOR BY 👨‍💻 SHADOW MOVIE X MAIN OWMER 👨‍💻";
 const BASE_URL = "https://beeg.com";
 const WS_SEARCH_URL = "https://search.externulls.com/";
 const THUMBS_BASE = "https://thumbs.externulls.com";
-const PREVIEWS_BASE = "https://previews.externulls.com";
 const VP_BASE = "https://vp.externulls.com";
 const VP_HANDLER_BASE = "https://vp-handler.externulls.com";
 const STORE_BASE = "https://store.externulls.com";
@@ -250,6 +249,88 @@ async function fetch_json_safe(target_url) {
   return null;
 }
 
+function extract_videos_from_node(node, out = [], seen = new Set(), depth = 0) {
+  if (!node || depth > 10) return out;
+
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      extract_videos_from_node(item, out, seen, depth + 1);
+    }
+    return out;
+  }
+
+  if (typeof node === "object") {
+    const raw_id = node.id ?? node.video_id ?? node.fc_id ?? node.pt_id ?? null;
+    const title = node.title ?? node.name ?? node.fc_title ?? node.caption ?? null;
+    const is_video_obj =
+      (raw_id !== null && String(raw_id).length > 0 && !node.tg_slug) &&
+      (title || node.duration || node.thumbs || node.file || node.streams);
+
+    if (is_video_obj) {
+      const vid_id = String(raw_id);
+      const vid_title = String(title || `Video ${vid_id}`).trim();
+      const image = extract_real_image(node);
+      const duration = node.duration ?? node.len ?? node.length ?? null;
+      const vid_url = `${BASE_URL}/${encodeURIComponent(vid_id)}`;
+      const key = `${vid_id}|${vid_title}`;
+
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push({
+          id: vid_id,
+          title: vid_title,
+          duration,
+          image,
+          url: vid_url,
+        });
+      }
+    }
+
+    for (const v of Object.values(node)) {
+      extract_videos_from_node(v, out, seen, depth + 1);
+    }
+  }
+
+  return out;
+}
+
+async function resolve_tag_videos({ slug = "", id = "", limit = 15, offset = 0 }) {
+  const keys = Array.from(new Set([slug, id].map((s) => String(s || "").trim()).filter(Boolean)));
+  const videos = [];
+  const seen = new Set();
+
+  for (const k of keys) {
+    const store_json = await fetch_json_safe(
+      `${STORE_BASE}/tag/${encodeURIComponent(k)}/videos?limit=${limit}&offset=${offset}`
+    );
+    if (store_json) {
+      extract_videos_from_node(store_json, videos, seen, 0);
+    }
+
+    if (videos.length === 0) {
+      const page_html = (await fetch_text_safe(`${BASE_URL}/${encodeURIComponent(k)}`, "text/html,*/*", 5000)) || "";
+      for (const m of page_html.matchAll(/href=["']\/(\d{4,12})(?:\/|["'?#])/gi)) {
+        const vid_id = m[1];
+        if (!seen.has(vid_id)) {
+          seen.add(vid_id);
+          videos.push({
+            id: vid_id,
+            title: `Video #${vid_id}`,
+            duration: null,
+            image: null,
+            url: `${BASE_URL}/${vid_id}`,
+          });
+        }
+        if (videos.length >= limit) break;
+      }
+    }
+
+    if (videos.length > 0) break;
+  }
+
+  return videos.slice(0, limit);
+}
+
 function collect_streams_recursive(node, out = [], seen = new Set(), depth = 0) {
   if (!node || depth > 12) return out;
 
@@ -334,54 +415,32 @@ async function resolve_info(target_input, explicit_image = null) {
   const og_img =
     (html.match(/<meta[^>]+property=["']og:image["'][^>]*content=["']([^"']+)["']/i) || [])[1] || "";
 
-  let matched_item = null;
-  if (slug_or_id) {
-    const found = await ws_search({ query: slug_or_id, offset: 0, limit: 10, timeout_ms: 4000 });
-    matched_item =
-      found.find(
-        (it) =>
-          String(it.slug || "").toLowerCase() === slug_or_id.toLowerCase() ||
-          String(it.id || "").toLowerCase() === slug_or_id.toLowerCase()
-      ) || found[0] || null;
-  }
-
-  const lookup_keys = Array.from(
-    new Set([slug_or_id, matched_item?.id, matched_item?.slug].filter(Boolean))
-  );
-
+  const lookup_keys = Array.from(new Set([slug_or_id].filter(Boolean)));
   let api_json = null;
-  let tag_videos_json = null;
 
   for (const key_val of lookup_keys) {
-    if (!tag_videos_json) {
-      tag_videos_json = await fetch_json_safe(
-        `${STORE_BASE}/tag/${encodeURIComponent(key_val)}/videos`
-      );
-    }
-    if (!api_json) {
-      const candidates = [
-        `${VP_HANDLER_BASE}/v1/video/${encodeURIComponent(key_val)}`,
-        `${VP_HANDLER_BASE}/video/${encodeURIComponent(key_val)}`,
-        `${VP_HANDLER_BASE}/video?id=${encodeURIComponent(key_val)}`,
-        `${VP_HANDLER_BASE}/${encodeURIComponent(key_val)}`,
-        `${VP_BASE}/${encodeURIComponent(key_val)}`,
-        `${VIDEO_BASE}/${encodeURIComponent(key_val)}`,
-      ];
-      for (const candidate of candidates) {
-        const parsed = await fetch_json_safe(candidate);
-        if (parsed && typeof parsed === "object") {
-          api_json = parsed;
-          break;
-        }
+    const candidates = [
+      `${VP_HANDLER_BASE}/v1/video/${encodeURIComponent(key_val)}`,
+      `${VP_HANDLER_BASE}/video/${encodeURIComponent(key_val)}`,
+      `${VP_HANDLER_BASE}/video?id=${encodeURIComponent(key_val)}`,
+      `${VP_HANDLER_BASE}/${encodeURIComponent(key_val)}`,
+      `${VP_BASE}/${encodeURIComponent(key_val)}`,
+      `${VIDEO_BASE}/${encodeURIComponent(key_val)}`,
+    ];
+    for (const candidate of candidates) {
+      const parsed = await fetch_json_safe(candidate);
+      if (parsed && typeof parsed === "object") {
+        api_json = parsed;
+        break;
       }
     }
+    if (api_json) break;
   }
 
   const title =
     api_json?.title ||
     api_json?.data?.title ||
     api_json?.tg_name ||
-    matched_item?.title ||
     og_title ||
     slug_or_id ||
     "Unknown";
@@ -397,14 +456,11 @@ async function resolve_info(target_input, explicit_image = null) {
     clean_explicit_img ||
     extract_real_image(api_json) ||
     extract_real_image(api_json?.data) ||
-    extract_real_image(tag_videos_json) ||
-    matched_item?.image ||
     absolutize_url(og_img, page_url) ||
     null;
 
   const raw_streams = [
     ...collect_streams_recursive(api_json),
-    ...collect_streams_recursive(tag_videos_json),
     ...collect_streams_recursive(html),
   ];
 
@@ -418,13 +474,12 @@ async function resolve_info(target_input, explicit_image = null) {
   }
 
   return {
-    id: matched_item?.id || slug_or_id || null,
-    slug: matched_item?.slug || slug_or_id || null,
+    id: slug_or_id || null,
+    slug: slug_or_id || null,
     url: page_url,
     title,
     description,
     image,
-    videosCount: matched_item?.videosCount ?? null,
     streams,
   };
 }
@@ -445,8 +500,8 @@ export default {
           status: "ready",
           endpoints: [
             "/search?q=<query>&offset=0&limit=24",
+            "/videos?slug=<slug>&id=<id>&limit=15&offset=0",
             "/info?url=<url_or_slug>&image=<optional_img_url>",
-            "/information?url=<url_or_slug>&image=<optional_img_url>",
             "/dl?url=<url_or_slug>&image=<optional_img_url>",
           ],
         });
@@ -470,6 +525,25 @@ export default {
           limit,
           total: items.length,
           items,
+        });
+      }
+
+      if (pathname === "/videos") {
+        const slug = (url.searchParams.get("slug") || "").trim();
+        const id = (url.searchParams.get("id") || "").trim();
+        if (!slug && !id) {
+          return json_res({ ok: false, error: "Missing ?slug= or ?id= parameter" }, 400);
+        }
+        const limit = Math.min(50, Math.max(1, parseInt(url.searchParams.get("limit") || "15", 10) || 15));
+        const offset = Math.max(0, parseInt(url.searchParams.get("offset") || "0", 10) || 0);
+        const videos = await resolve_tag_videos({ slug, id, limit, offset });
+
+        return json_res({
+          ok: true,
+          slug: slug || null,
+          id: id || null,
+          total: videos.length,
+          videos,
         });
       }
 
