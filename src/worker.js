@@ -348,9 +348,23 @@ async function resolve_info(target_input, explicit_image = null) {
     }
   }
 
+  let matched_item = null;
+  if (!explicit_image && slug_or_id) {
+    try {
+      const found = await ws_search({ query: slug_or_id, offset: 0, limit: 10, timeout_ms: 4500 });
+      matched_item =
+        found.find(
+          (it) =>
+            String(it.slug || "").toLowerCase() === slug_or_id.toLowerCase() ||
+            String(it.id || "").toLowerCase() === slug_or_id.toLowerCase()
+        ) || found[0] || null;
+    } catch (_) {}
+  }
+
   const title =
     api_json?.title ||
     api_json?.tg_name ||
+    matched_item?.title ||
     og_title ||
     slug_or_id ||
     "Unknown";
@@ -364,6 +378,7 @@ async function resolve_info(target_input, explicit_image = null) {
   const image =
     absolutize_url(explicit_image, THUMBS_BASE) ||
     extract_entry_image(api_json) ||
+    matched_item?.image ||
     absolutize_url(og_img, page_url) ||
     null;
 
@@ -380,6 +395,33 @@ async function resolve_info(target_input, explicit_image = null) {
     image,
     streams,
   };
+}
+
+async function inspect_vp_in_bundle() {
+  const shell_r = await fetch(`${BASE_URL}/`, {
+    headers: { "User-Agent": UA, Referer: BASE_URL },
+  });
+  const shell_html = await shell_r.text();
+  const bundle_m = shell_html.match(/src=["']([^"']*\/dist\/main\.[^"']+\.js)["']/i);
+  const bundle_url = new URL(
+    bundle_m ? bundle_m[1] : "/dist/main.94e48973.js",
+    BASE_URL
+  ).toString();
+
+  const js_r = await fetch(bundle_url, {
+    headers: { "User-Agent": UA, Referer: `${BASE_URL}/` },
+  });
+  const js_code = await js_r.text();
+
+  const snippets = [];
+  for (const key of ["api_endpoint_vp_handler", "api_endpoint_videos", "vp-handler"]) {
+    let idx = js_code.indexOf(key);
+    while (idx !== -1 && snippets.length < 12) {
+      snippets.push(js_code.slice(Math.max(0, idx - 140), Math.min(js_code.length, idx + 260)));
+      idx = js_code.indexOf(key, idx + key.length);
+    }
+  }
+  return { bundleUrl: bundle_url, snippets };
 }
 
 export default {
@@ -408,6 +450,11 @@ export default {
     if (auth_err) return auth_err;
 
     try {
+      if (pathname === "/vp-check") {
+        const info = await inspect_vp_in_bundle();
+        return json_res({ ok: true, ...info });
+      }
+
       if (pathname === "/search") {
         const q = (url.searchParams.get("q") || "").trim();
         if (!q) {
