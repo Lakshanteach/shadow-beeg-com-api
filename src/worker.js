@@ -1,4 +1,4 @@
-// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls scraper (search + tag videos + info + dl)
+// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls single-video scraper (no api key)
 
 const CREATOR = "CREATOR BY 👨‍💻 SHADOW MOVIE X MAIN OWMER 👨‍💻";
 const BASE_URL = "https://beeg.com";
@@ -263,7 +263,9 @@ function extract_videos_from_node(node, out = [], seen = new Set(), depth = 0) {
     const raw_id = node.id ?? node.video_id ?? node.fc_id ?? node.pt_id ?? null;
     const title = node.title ?? node.name ?? node.fc_title ?? node.caption ?? null;
     const is_video_obj =
-      (raw_id !== null && String(raw_id).length > 0 && !node.tg_slug) &&
+      raw_id !== null &&
+      String(raw_id).length > 0 &&
+      !node.tg_slug &&
       (title || node.duration || node.thumbs || node.file || node.streams);
 
     if (is_video_obj) {
@@ -278,7 +280,9 @@ function extract_videos_from_node(node, out = [], seen = new Set(), depth = 0) {
         seen.add(key);
         out.push({
           id: vid_id,
+          slug: vid_id,
           title: vid_title,
+          type: "video",
           duration,
           image,
           url: vid_url,
@@ -308,20 +312,44 @@ async function resolve_tag_videos({ slug = "", id = "", limit = 15, offset = 0 }
     }
 
     if (videos.length === 0) {
-      const page_html = (await fetch_text_safe(`${BASE_URL}/${encodeURIComponent(k)}`, "text/html,*/*", 5000)) || "";
-      for (const m of page_html.matchAll(/href=["']\/(\d{4,12})(?:\/|["'?#])/gi)) {
+      const page_html =
+        (await fetch_text_safe(`${BASE_URL}/${encodeURIComponent(k)}`, "text/html,*/*", 5000)) || "";
+
+      for (const m of page_html.matchAll(/<a[^>]+href=["']\/(\d{4,12})(?:\/|["'?#])[^>]*>([\s\S]*?)<\/a>/gi)) {
         const vid_id = m[1];
+        const raw_label = m[2].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
         if (!seen.has(vid_id)) {
           seen.add(vid_id);
           videos.push({
             id: vid_id,
-            title: `Video #${vid_id}`,
+            slug: vid_id,
+            title: raw_label || `Video #${vid_id}`,
+            type: "video",
             duration: null,
             image: null,
             url: `${BASE_URL}/${vid_id}`,
           });
         }
         if (videos.length >= limit) break;
+      }
+
+      if (videos.length === 0) {
+        for (const m of page_html.matchAll(/href=["']\/(\d{4,12})(?:\/|["'?#])/gi)) {
+          const vid_id = m[1];
+          if (!seen.has(vid_id)) {
+            seen.add(vid_id);
+            videos.push({
+              id: vid_id,
+              slug: vid_id,
+              title: `Video #${vid_id}`,
+              type: "video",
+              duration: null,
+              image: null,
+              url: `${BASE_URL}/${vid_id}`,
+            });
+          }
+          if (videos.length >= limit) break;
+        }
       }
     }
 
