@@ -1,4 +1,4 @@
-// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls API worker (header-only secret auth)
+// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls API worker (hidden header key)
 
 const CREATOR = "CREATOR BY 👨‍💻 SHADOW MOVIE X MAIN OWMER 👨‍💻";
 const BASE_URL = "https://beeg.com";
@@ -9,6 +9,11 @@ const VP_BASE = "https://vp.externulls.com";
 const VP_HANDLER_BASE = "https://vp-handler.externulls.com";
 const STORE_BASE = "https://store.externulls.com";
 const VIDEO_BASE = "https://video.beeg.com";
+
+// Base64-encoded keys stored inside code (not plain text); add more base64 keys separated by "," if needed
+const EMBEDDED_KEYS_B64 = [
+  "c2hhZG93X21vdmllLXhfLTk5OTk5OTk5OTk=",
+];
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -35,17 +40,32 @@ function json_res(data, status = 200) {
   );
 }
 
-function get_allowed_keys(env) {
-  const raw = String(env?.API_KEYS || "");
-  return new Set(
-    raw
-      .split(/[\n,]+/)
-      .map((k) => k.trim())
-      .filter(Boolean)
-  );
+function decode_b64_safe(b64) {
+  try {
+    return atob(String(b64 || "").trim()).trim();
+  } catch (_) {
+    return "";
+  }
 }
 
-// Header-only extraction (URL query keys intentionally ignored so keys never leak in links)
+function get_allowed_keys(env) {
+  const keys = new Set();
+
+  for (const b64 of EMBEDDED_KEYS_B64) {
+    const decoded = decode_b64_safe(b64);
+    if (decoded) keys.add(decoded);
+  }
+
+  const env_raw = String(env?.API_KEYS || "");
+  for (const k of env_raw.split(/[\n,]+/)) {
+    const clean = k.trim();
+    if (clean) keys.add(clean);
+  }
+
+  return keys;
+}
+
+// Header-only extraction (URL query keys intentionally ignored)
 function extract_api_key_from_headers(request) {
   const header_key =
     request.headers.get("x-api-key") ||
@@ -62,25 +82,15 @@ function extract_api_key_from_headers(request) {
 
 function require_api_key(request, env) {
   const allowed = get_allowed_keys(env);
-  if (allowed.size === 0) {
-    return json_res(
-      {
-        ok: false,
-        error: "Server API_KEYS secret is not configured",
-        requestAccess: "API key එක ලබාගැනීමට owner/creator වෙතින් ඉල්ලා සිටින්න.",
-      },
-      503
-    );
-  }
-
   const provided = extract_api_key_from_headers(request);
+
   if (!provided || !allowed.has(provided)) {
     return json_res(
       {
         ok: false,
-        error: "Invalid or missing API key in header",
-        requestAccess: "API key එක අවශ්‍යයි — කරුණාකර owner වෙතින් API key එක ඉල්ලා ගන්න.",
-        authHeaders: ["X-API-Key: <YOUR_API_KEY>", "Authorization: Bearer <YOUR_API_KEY>"],
+        error: "API key required in header",
+        message: "API key එක ලබාගැනීමට owner වෙතින් ඉල්ලා සිටින්න.",
+        headers: ["X-API-Key: <YOUR_API_KEY>", "Authorization: Bearer <YOUR_API_KEY>"],
       },
       401
     );
@@ -478,7 +488,7 @@ export default {
       return json_res({
         ok: true,
         status: "ready",
-        access: "Private — API key required in header (request from owner)",
+        message: "API key එක ලබාගැනීමට owner වෙතින් ඉල්ලා සිටින්න.",
         endpoints: [
           "/search?q=<query>&offset=0&limit=24",
           "/info?url=<url_or_slug>&image=<optional_img_url>",
