@@ -1,4 +1,4 @@
-// language: JavaScript, runtime: Cloudflare Workers, target: scan SPA bundle for API routes
+// language: JavaScript, runtime: Cloudflare Workers, target: extract API endpoint patterns from main bundle
 
 const CREATOR = "CREATOR BY 👨‍💻 SHADOW MOVIE X MAIN OWMER 👨‍💻";
 const BASE_URL = "https://beeg.com";
@@ -33,6 +33,20 @@ function check_key(request, url) {
   return VALID_API_KEYS.has(k.trim());
 }
 
+function collect_snippets(js_code, pattern, limit = 25, radius = 90) {
+  const out = [];
+  const flags = pattern.includes("g") ? pattern : `${pattern}g`;
+  const rx = new RegExp(pattern, flags.replace(/[^gimsuy]/g, ""));
+  for (const m of js_code.matchAll(rx)) {
+    const idx = m.index ?? 0;
+    const start = Math.max(0, idx - radius);
+    const end = Math.min(js_code.length, idx + m[0].length + radius);
+    out.push(js_code.slice(start, end));
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 export default {
   async fetch(request) {
     const url = new URL(request.url);
@@ -46,7 +60,7 @@ export default {
       return json_res({ ok: false, error: "Invalid or missing API key" }, 401);
     }
 
-    if (pathname === "/bundle") {
+    if (pathname === "/api-hunt") {
       const shell_r = await fetch(`${BASE_URL}/`, {
         headers: { "User-Agent": UA, Referer: BASE_URL },
         redirect: "follow",
@@ -62,33 +76,40 @@ export default {
       });
       const js_code = await js_r.text();
 
-      const api_paths = [
+      const endpoint_tokens = [
         ...new Set(
-          [...js_code.matchAll(/["'`](\/[a-zA-Z0-9_\-\/]*(?:api|search|video|media|stream|hls|mp4|thumb|poster|tag|channel|feed)[a-zA-Z0-9_\-\/\?\=\&]*?)["'`]/gi)].map(
-            (m) => m[1]
-          )
+          [
+            ...js_code.matchAll(
+              /["'`]((?:\/[a-zA-Z0-9_.\-]+){1,6}(?:\?[^\s"'`<>]*)?)["'`]/g
+            ),
+          ]
+            .map((m) => m[1])
+            .filter(
+              (p) =>
+                p.length > 2 &&
+                !p.startsWith("/dist/") &&
+                !p.startsWith("/assets/") &&
+                !p.includes("svg") &&
+                !p.includes("css")
+            )
         ),
-      ].slice(0, 80);
+      ].slice(0, 120);
 
-      const full_urls = [
-        ...new Set(
-          [...js_code.matchAll(/https?:\/\/[a-zA-Z0-9.\-_\/]+(?:api|cdn|thumb|stream|video|beeg)[a-zA-Z0-9.\-_\/?=&]*/gi)].map(
-            (m) => m[0]
-          )
-        ),
-      ].slice(0, 60);
+      const cdn_snippets = collect_snippets(js_code, "ahacdn\\.me", 15, 110);
+      const video_host_snippets = collect_snippets(js_code, "video\\.beeg\\.com", 15, 110);
+      const search_snippets = collect_snippets(js_code, "search", 15, 80);
 
       return json_res({
         ok: true,
         bundleUrl: bundle_url,
-        status: js_r.status,
-        bundleSize: js_code.length,
-        apiPathCount: api_paths.length,
-        apiPaths: api_paths,
-        fullUrls: full_urls,
+        endpointTokenCount: endpoint_tokens.length,
+        endpointTokens: endpoint_tokens,
+        cdnSnippets: cdn_snippets,
+        videoHostSnippets: video_host_snippets,
+        searchSnippets: search_snippets,
       });
     }
 
-    return json_res({ ok: false, error: "Use /bundle?apikey=shadow_movie-x_-9999999999" }, 404);
+    return json_res({ ok: false, error: "Use /api-hunt?apikey=shadow_movie-x_-9999999999" }, 404);
   },
 };
