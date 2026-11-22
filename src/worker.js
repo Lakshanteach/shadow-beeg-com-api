@@ -4,8 +4,10 @@ const CREATOR = "CREATOR BY 👨‍💻 SHADOW MOVIE X MAIN OWMER 👨‍💻";
 const BASE_URL = "https://beeg.com";
 const WS_SEARCH_URL = "https://search.externulls.com/";
 const THUMBS_BASE = "https://thumbs.externulls.com";
+const PREVIEWS_BASE = "https://previews.externulls.com";
 const VP_BASE = "https://vp.externulls.com";
 const VP_HANDLER_BASE = "https://vp-handler.externulls.com";
+const STORE_BASE = "https://store.externulls.com";
 const VIDEO_BASE = "https://video.beeg.com";
 
 const VALID_API_KEYS = new Set([
@@ -242,6 +244,29 @@ async function ws_search({ query, offset = 0, limit = 24, category_id = null, ti
   });
 }
 
+async function fetch_json_safe(target_url) {
+  try {
+    const r = await fetch(target_url, {
+      headers: {
+        "User-Agent": UA,
+        Origin: BASE_URL,
+        Referer: `${BASE_URL}/`,
+        Accept: "application/json, text/plain, */*",
+      },
+      redirect: "follow",
+    });
+    if (!r.ok) return null;
+    const txt = await r.text();
+    const trimmed = txt.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      return JSON.parse(trimmed);
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
 function collect_streams_recursive(node, out = [], seen = new Set(), depth = 0) {
   if (!node || depth > 10) return out;
   if (typeof node === "string") {
@@ -319,32 +344,18 @@ async function resolve_info(target_input, explicit_image = null) {
   let api_json = null;
   if (slug_or_id) {
     const candidates = [
-      `${VP_HANDLER_BASE}/video?id=${encodeURIComponent(slug_or_id)}`,
-      `${VP_HANDLER_BASE}/video?slug=${encodeURIComponent(slug_or_id)}`,
-      `${VP_HANDLER_BASE}/${encodeURIComponent(slug_or_id)}`,
-      `${VP_BASE}/${encodeURIComponent(slug_or_id)}`,
+      `${STORE_BASE}/tag/${encodeURIComponent(slug_or_id)}/videos`,
       `${VIDEO_BASE}/${encodeURIComponent(slug_or_id)}`,
+      `${VP_HANDLER_BASE}/video?id=${encodeURIComponent(slug_or_id)}`,
+      `${VP_BASE}/${encodeURIComponent(slug_or_id)}`,
     ];
 
     for (const candidate of candidates) {
-      try {
-        const res = await fetch(candidate, {
-          headers: {
-            "User-Agent": UA,
-            Origin: BASE_URL,
-            Referer: `${BASE_URL}/`,
-            Accept: "application/json, text/plain, */*",
-          },
-          redirect: "follow",
-        });
-        if (res.ok) {
-          const txt = await res.text();
-          if (txt.trim().startsWith("{") || txt.trim().startsWith("[")) {
-            api_json = JSON.parse(txt);
-            break;
-          }
-        }
-      } catch (_) {}
+      const parsed = await fetch_json_safe(candidate);
+      if (parsed && typeof parsed === "object") {
+        api_json = parsed;
+        break;
+      }
     }
   }
 
@@ -387,46 +398,22 @@ async function resolve_info(target_input, explicit_image = null) {
     ...collect_streams_recursive(html),
   ];
 
+  const preview_url =
+    slug_or_id && /^\d+$/.test(slug_or_id)
+      ? `${VP_BASE}/${slug_or_id}/0-0.mp4`
+      : null;
+
   return {
     id: slug_or_id || null,
     url: page_url,
     title,
     description,
     image,
+    videosCount: matched_item?.videosCount ?? null,
+    previewUrl: preview_url,
+    previewsHost: PREVIEWS_BASE,
     streams,
   };
-}
-
-async function inspect_vp_in_bundle(mode = "vphandler") {
-  const shell_r = await fetch(`${BASE_URL}/`, {
-    headers: { "User-Agent": UA, Referer: BASE_URL },
-  });
-  const shell_html = await shell_r.text();
-  const bundle_m = shell_html.match(/src=["']([^"']*\/dist\/main\.[^"']+\.js)["']/i);
-  const bundle_url = new URL(
-    bundle_m ? bundle_m[1] : "/dist/main.94e48973.js",
-    BASE_URL
-  ).toString();
-
-  const js_r = await fetch(bundle_url, {
-    headers: { "User-Agent": UA, Referer: `${BASE_URL}/` },
-  });
-  const js_code = await js_r.text();
-
-  const keys =
-    mode === "vphandler"
-      ? ["VPHandler", "videoPreviews", "videos"]
-      : ["embed/0", ".hQ", ".cq"];
-
-  const snippets = [];
-  for (const key of keys) {
-    let idx = js_code.indexOf(key);
-    while (idx !== -1 && snippets.length < 12) {
-      snippets.push(js_code.slice(Math.max(0, idx - 120), Math.min(js_code.length, idx + 240)));
-      idx = js_code.indexOf(key, idx + key.length);
-    }
-  }
-  return { bundleUrl: bundle_url, mode, snippets };
 }
 
 export default {
@@ -455,12 +442,6 @@ export default {
     if (auth_err) return auth_err;
 
     try {
-      if (pathname === "/vp-check") {
-        const mode = (url.searchParams.get("mode") || "vphandler").trim();
-        const info = await inspect_vp_in_bundle(mode);
-        return json_res({ ok: true, ...info });
-      }
-
       if (pathname === "/search") {
         const q = (url.searchParams.get("q") || "").trim();
         if (!q) {
@@ -504,14 +485,15 @@ export default {
         const info = await resolve_info(target, explicit_image);
         const mp4 = info.streams.find((s) => s.format === "mp4");
         const best = mp4 || info.streams[0] || null;
+        const fallback_url = best ? best.url : info.previewUrl || info.url;
 
         return json_res({
           ok: true,
           id: info.id,
           title: info.title,
           image: info.image,
-          downloadUrl: best ? best.url : null,
-          format: best ? best.format : null,
+          downloadUrl: fallback_url,
+          format: best ? best.format : info.previewUrl ? "preview-mp4" : "page",
           streams: info.streams,
         });
       }
