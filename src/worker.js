@@ -1,4 +1,4 @@
-// language: JavaScript, runtime: Cloudflare Workers, target: inspect VPHandler calls in bundle
+// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls API worker
 
 const CREATOR = "CREATOR BY 👨‍💻 SHADOW MOVIE X MAIN OWMER 👨‍💻";
 const BASE_URL = "https://beeg.com";
@@ -502,4 +502,29 @@ export default {
           return json_res({ ok: false, error: "Missing ?url= or ?id= parameter" }, 400);
         }
         const info = await resolve_info(target, explicit_image);
-        const mp4 = info.streams.find((s) => s
+        const mp4 = info.streams.find((s) => s.format === "mp4");
+        const best = mp4 || info.streams[0] || null;
+
+        return json_res({
+          ok: true,
+          id: info.id,
+          title: info.title,
+          image: info.image,
+          downloadUrl: best ? best.url : null,
+          format: best ? best.format : null,
+          streams: info.streams,
+        });
+      }
+
+      return json_res({ ok: false, error: "Endpoint not found" }, 404);
+    } catch (err) {
+      return json_res(
+        {
+          ok: false,
+          error: err?.message || "Worker error",
+        },
+        500
+      );
+    }
+  },
+};
