@@ -1,4 +1,4 @@
-// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls API worker
+// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls API worker (header-only secret auth)
 
 const CREATOR = "CREATOR BY 👨‍💻 SHADOW MOVIE X MAIN OWMER 👨‍💻";
 const BASE_URL = "https://beeg.com";
@@ -9,10 +9,6 @@ const VP_BASE = "https://vp.externulls.com";
 const VP_HANDLER_BASE = "https://vp-handler.externulls.com";
 const STORE_BASE = "https://store.externulls.com";
 const VIDEO_BASE = "https://video.beeg.com";
-
-const VALID_API_KEYS = new Set([
-  "shadow_movie-x_-9999999999",
-]);
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -39,7 +35,18 @@ function json_res(data, status = 200) {
   );
 }
 
-function extract_api_key(request, url) {
+function get_allowed_keys(env) {
+  const raw = String(env?.API_KEYS || "");
+  return new Set(
+    raw
+      .split(/[\n,]+/)
+      .map((k) => k.trim())
+      .filter(Boolean)
+  );
+}
+
+// Header-only extraction (URL query keys intentionally ignored so keys never leak in links)
+function extract_api_key_from_headers(request) {
   const header_key =
     request.headers.get("x-api-key") ||
     request.headers.get("apikey") ||
@@ -50,22 +57,30 @@ function extract_api_key(request, url) {
     ? auth_header.slice(7).trim()
     : "";
 
-  const query_key =
-    url.searchParams.get("apikey") ||
-    url.searchParams.get("api_key") ||
-    url.searchParams.get("key") ||
-    "";
-
-  return (header_key || bearer_key || query_key || "").trim();
+  return (header_key || bearer_key || "").trim();
 }
 
-function require_api_key(request, url) {
-  const provided = extract_api_key(request, url);
-  if (!provided || !VALID_API_KEYS.has(provided)) {
+function require_api_key(request, env) {
+  const allowed = get_allowed_keys(env);
+  if (allowed.size === 0) {
     return json_res(
       {
         ok: false,
-        error: "Invalid or missing API key",
+        error: "Server API_KEYS secret is not configured",
+        requestAccess: "API key එක ලබාගැනීමට owner/creator වෙතින් ඉල්ලා සිටින්න.",
+      },
+      503
+    );
+  }
+
+  const provided = extract_api_key_from_headers(request);
+  if (!provided || !allowed.has(provided)) {
+    return json_res(
+      {
+        ok: false,
+        error: "Invalid or missing API key in header",
+        requestAccess: "API key එක අවශ්‍යයි — කරුණාකර owner වෙතින් API key එක ඉල්ලා ගන්න.",
+        authHeaders: ["X-API-Key: <YOUR_API_KEY>", "Authorization: Bearer <YOUR_API_KEY>"],
       },
       401
     );
@@ -451,7 +466,7 @@ async function resolve_info(target_input, explicit_image = null) {
 }
 
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     if (request.method === "OPTIONS") {
       return json_res({ ok: true }, 200);
     }
@@ -463,16 +478,17 @@ export default {
       return json_res({
         ok: true,
         status: "ready",
+        access: "Private — API key required in header (request from owner)",
         endpoints: [
-          "/search?q=<query>&offset=0&limit=24&apikey=shadow_movie-x_-9999999999",
-          "/info?url=<url_or_slug>&image=<optional_img_url>&apikey=shadow_movie-x_-9999999999",
-          "/information?url=<url_or_slug>&image=<optional_img_url>&apikey=shadow_movie-x_-9999999999",
-          "/dl?url=<url_or_slug>&image=<optional_img_url>&apikey=shadow_movie-x_-9999999999",
+          "/search?q=<query>&offset=0&limit=24",
+          "/info?url=<url_or_slug>&image=<optional_img_url>",
+          "/information?url=<url_or_slug>&image=<optional_img_url>",
+          "/dl?url=<url_or_slug>&image=<optional_img_url>",
         ],
       });
     }
 
-    const auth_err = require_api_key(request, url);
+    const auth_err = require_api_key(request, env);
     if (auth_err) return auth_err;
 
     try {
