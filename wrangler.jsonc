@@ -1,0 +1,5 @@
+{
+  "name": "cinema-lk-scraper",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-11-01"
+}
