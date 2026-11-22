@@ -284,7 +284,7 @@ function collect_streams_recursive(node, out = [], seen = new Set(), depth = 0) 
   return out;
 }
 
-async function resolve_info(target_input) {
+async function resolve_info(target_input, explicit_image = null) {
   const raw = String(target_input).trim();
   const is_url = /^https?:\/\//i.test(raw);
   const page_url = is_url ? raw : `${BASE_URL}/${encodeURIComponent(raw)}`;
@@ -318,11 +318,15 @@ async function resolve_info(target_input) {
 
   let api_json = null;
   if (slug_or_id) {
-    for (const candidate of [
+    const candidates = [
+      `${VP_HANDLER_BASE}/video?id=${encodeURIComponent(slug_or_id)}`,
+      `${VP_HANDLER_BASE}/video?slug=${encodeURIComponent(slug_or_id)}`,
       `${VP_HANDLER_BASE}/${encodeURIComponent(slug_or_id)}`,
       `${VP_BASE}/${encodeURIComponent(slug_or_id)}`,
       `${VIDEO_BASE}/${encodeURIComponent(slug_or_id)}`,
-    ]) {
+    ];
+
+    for (const candidate of candidates) {
       try {
         const res = await fetch(candidate, {
           headers: {
@@ -358,6 +362,7 @@ async function resolve_info(target_input) {
     null;
 
   const image =
+    absolutize_url(explicit_image, THUMBS_BASE) ||
     extract_entry_image(api_json) ||
     absolutize_url(og_img, page_url) ||
     null;
@@ -392,9 +397,9 @@ export default {
         status: "ready",
         endpoints: [
           "/search?q=<query>&offset=0&limit=24&apikey=shadow_movie-x_-9999999999",
-          "/info?url=<url_or_slug>&apikey=shadow_movie-x_-9999999999",
-          "/information?url=<url_or_slug>&apikey=shadow_movie-x_-9999999999",
-          "/dl?url=<url_or_slug>&apikey=shadow_movie-x_-9999999999",
+          "/info?url=<url_or_slug>&image=<optional_img_url>&apikey=shadow_movie-x_-9999999999",
+          "/information?url=<url_or_slug>&image=<optional_img_url>&apikey=shadow_movie-x_-9999999999",
+          "/dl?url=<url_or_slug>&image=<optional_img_url>&apikey=shadow_movie-x_-9999999999",
         ],
       });
     }
@@ -426,10 +431,11 @@ export default {
 
       if (pathname === "/info" || pathname === "/information") {
         const target = (url.searchParams.get("url") || url.searchParams.get("id") || "").trim();
+        const explicit_image = (url.searchParams.get("image") || "").trim() || null;
         if (!target) {
           return json_res({ ok: false, error: "Missing ?url= or ?id= parameter" }, 400);
         }
-        const info = await resolve_info(target);
+        const info = await resolve_info(target, explicit_image);
         return json_res({
           ok: true,
           ...info,
@@ -438,10 +444,11 @@ export default {
 
       if (pathname === "/dl") {
         const target = (url.searchParams.get("url") || url.searchParams.get("id") || "").trim();
+        const explicit_image = (url.searchParams.get("image") || "").trim() || null;
         if (!target) {
           return json_res({ ok: false, error: "Missing ?url= or ?id= parameter" }, 400);
         }
-        const info = await resolve_info(target);
+        const info = await resolve_info(target, explicit_image);
         const mp4 = info.streams.find((s) => s.format === "mp4");
         const best = mp4 || info.streams[0] || null;
 
