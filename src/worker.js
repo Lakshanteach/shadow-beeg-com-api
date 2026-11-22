@@ -1,4 +1,4 @@
-// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls API worker
+// language: JavaScript, runtime: Cloudflare Workers, target: inspect VPHandler calls in bundle
 
 const CREATOR = "CREATOR BY 👨‍💻 SHADOW MOVIE X MAIN OWMER 👨‍💻";
 const BASE_URL = "https://beeg.com";
@@ -397,7 +397,7 @@ async function resolve_info(target_input, explicit_image = null) {
   };
 }
 
-async function inspect_vp_in_bundle(mode = "usage") {
+async function inspect_vp_in_bundle(mode = "vphandler") {
   const shell_r = await fetch(`${BASE_URL}/`, {
     headers: { "User-Agent": UA, Referer: BASE_URL },
   });
@@ -414,11 +414,9 @@ async function inspect_vp_in_bundle(mode = "usage") {
   const js_code = await js_r.text();
 
   const keys =
-    mode === "video_id"
-      ? ["video_route_symbol", "embed_video_route_symbol", "api_endpoint_videos"]
-      : mode === "vp"
-        ? ["api_endpoint_vp_handler", "vp-handler", "vp.externulls.com"]
-        : ["embed/0", ".hQ", ".cq", "vpHandler"];
+    mode === "vphandler"
+      ? ["VPHandler", "videoPreviews", "videos"]
+      : ["embed/0", ".hQ", ".cq"];
 
   const snippets = [];
   for (const key of keys) {
@@ -458,7 +456,7 @@ export default {
 
     try {
       if (pathname === "/vp-check") {
-        const mode = (url.searchParams.get("mode") || "usage").trim();
+        const mode = (url.searchParams.get("mode") || "vphandler").trim();
         const info = await inspect_vp_in_bundle(mode);
         return json_res({ ok: true, ...info });
       }
@@ -504,29 +502,4 @@ export default {
           return json_res({ ok: false, error: "Missing ?url= or ?id= parameter" }, 400);
         }
         const info = await resolve_info(target, explicit_image);
-        const mp4 = info.streams.find((s) => s.format === "mp4");
-        const best = mp4 || info.streams[0] || null;
-
-        return json_res({
-          ok: true,
-          id: info.id,
-          title: info.title,
-          image: info.image,
-          downloadUrl: best ? best.url : null,
-          format: best ? best.format : null,
-          streams: info.streams,
-        });
-      }
-
-      return json_res({ ok: false, error: "Endpoint not found" }, 404);
-    } catch (err) {
-      return json_res(
-        {
-          ok: false,
-          error: err?.message || "Worker error",
-        },
-        500
-      );
-    }
-  },
-};
+        const mp4 = info.streams.find((s) => s
