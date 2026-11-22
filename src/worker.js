@@ -1,4 +1,4 @@
-// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls API worker (fault-tolerant info & dl)
+// language: JavaScript, runtime: Cloudflare Workers, target: beeg / externulls API worker (single-flow ready)
 
 const CREATOR = "CREATOR BY 👨‍💻 SHADOW MOVIE X MAIN OWMER 👨‍💻";
 const BASE_URL = "https://beeg.com";
@@ -9,6 +9,7 @@ const VP_HANDLER_BASE = "https://vp-handler.externulls.com";
 const STORE_BASE = "https://store.externulls.com";
 const VIDEO_BASE = "https://video.beeg.com";
 
+// Base64-encoded keys stored inside code (add more base64 keys to share access with specific users)
 const EMBEDDED_KEYS_B64 = [
   "c2hhZG93X21vdmllLXhfLTk5OTk5OTk5OTk=",
 ];
@@ -63,6 +64,7 @@ function get_allowed_keys(env) {
   return keys;
 }
 
+// Header-only extraction (URL query keys intentionally ignored)
 function extract_api_key_from_headers(request) {
   const header_key =
     request.headers.get("x-api-key") ||
@@ -109,7 +111,10 @@ function absolutize_url(raw, base = BASE_URL) {
 }
 
 function is_image_url(u) {
-  return typeof u === "string" && /(\/thumbs\.externulls\.com\/|\.(?:jpg|jpeg|png|webp|gif)(?:\?|$))/i.test(u);
+  return (
+    typeof u === "string" &&
+    /(\/thumbs\.externulls\.com\/|\/previews\.externulls\.com\/|\.(?:jpg|jpeg|png|webp|gif)(?:\?|$))/i.test(u)
+  );
 }
 
 // Strict: return image ONLY when an explicit real image field/id exists in the entry
@@ -365,9 +370,10 @@ function collect_streams_recursive(node, out = [], seen = new Set(), depth = 0) 
 
 async function resolve_info(target_input, explicit_image = null) {
   const raw = String(target_input || "").trim();
-  const clean_explicit_img = explicit_image && is_image_url(explicit_image)
-    ? absolutize_url(explicit_image, THUMBS_BASE)
-    : null;
+  const clean_explicit_img =
+    explicit_image && is_image_url(explicit_image)
+      ? absolutize_url(explicit_image, THUMBS_BASE)
+      : null;
 
   const is_url = /^https?:\/\//i.test(raw);
   const page_url = is_url ? raw : `${BASE_URL}/${encodeURIComponent(raw)}`;
